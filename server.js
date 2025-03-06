@@ -1,167 +1,10 @@
-import express from "express";
-import path from "path";
 import fs from "fs/promises";
-import cors from "cors";
-import { Server } from "socket.io";
 import crypto from "crypto";
 import words from "./words.js";
-const app = express();
-const PORT = 4000;
-let rooms = [];
-//serve images
-app.use("/images", express.static(path.join("./images")));
-
-app.use(
-  cors({
-    origin: "http://localhost:3000", // Only allow this domain to make requests
-  })
-);
-app.use(express.json());
-
-// create server and give socket the same propreties to align with.
-const httpServer = app.listen(PORT, () => {
-  console.log(`Server is running on http://localhost:${PORT}`);
-});
-const io = new Server(httpServer, {
-  cors: {
-    origin: "http://localhost:3000",
-  },
-});
-
-//classes
-class Room {
-  // room class
-  constructor(name) {
-    // except the name all default values
-    this.name = name;
-    this.players = []; // lists the players in their order of play
-    this.guessers = []; // lists all players who guessed and how much points they got
-    this.round = 1;
-    this.rounds = 3;
-    this.turnTime = 100; // the time of each turn as a reference to the changing time
-    this.roundLen = undefined; // the amount of turns before round ends
-    this.roundCurrent = 0; // current index of number of turns in round
-    this.maxPlayers = 8;
-    this.wordsOptionNumber = 3;
-    this.wordChosen = null;
-    this.state = "public";
-    this.owner = null;
-    this.roomCode = "";
-  }
-  addPlayer(player) {
-    this.players.push(player);
-  }
-  checkIfRemove() {
-    // check if room should be deleted
-    if (this.players.length === 0) return true;
-  }
-  resetGuessers() {
-    this.guessers = [];
-  }
-  addGuesser(player) {
-    const scoreToGet =
-      this.guessers.length !== 0
-        ? this.guessers[this.guessers.length - 1].score -
-          100 / this.guessers.length
-        : 250; // if first one get 250 otherwise get using the formula
-    player.score += scoreToGet;
-    this.players[0].score += 100; // give the drawer 100 points per each guesser
-    this.guessers = [...this.guessers, { id: player.id, score: scoreToGet }];
-    // if all players guessed (excluding the drawer), end the turn
-    const playersNoDrawer = this.players.slice(1);
-    const isAllGuessers =
-      this.guessers.length === playersNoDrawer.length &&
-      playersNoDrawer.every((player) =>
-        this.guessers.some((guesser) => guesser.id === player.id)
-      );
-    if (isAllGuessers) this.endTurn();
-  }
-  didPlayerGuess(id) {
-    return this.guessers.some((player) => player.id === id);
-  }
-  getAllGuessersId() {
-    const guessers = this.guessers.map((player) => player.id);
-    return guessers;
-  }
-  getAllPlayerScores() {
-    // returns a list of player objects with score earned and id
-    return this.players.map((player) => {
-      for (let i = 0; i < this.guessers.length; i++) {
-        if (this.guessers[i].id === player.id) {
-          player.newScore = this.guessers[i].score || 0;
-          return player;
-        } else if (i === 0) {
-          player.newScore = this.guessers.length * 100;
-          return player;
-        }
-      }
-      player.newScore = 0;
-      return player;
-    });
-  }
-  startTimer() {
-    // starts the room timer.
-    let countdown = this.turnTime;
-    this.turnTimer = setInterval(() => {
-      io.to(this.name).emit("update-timer", countdown);
-      countdown--;
-      if (countdown <= 0) {
-        io.to(this.name).emit("update-timer", countdown);
-        this.endTurn();
-        clearInterval(this.turnTimer);
-      }
-    }, 1000);
-  }
-  stopTimer() {
-    //stops the timer
-    clearInterval(this?.turnTimer);
-  }
-  changeTurns() {
-    this.stopTimer(); // might remove
-    this.players = [...this.players.slice(1), this.players[0]];
-    this.wordChosen = null;
-    this.resetGuessers();
-    io.to(this.name).emit("room-update", cleanRoom(this));
-    io.to(this.name).emit("change-turn");
-  }
-  startTurn() {
-    this.startTimer();
-    this.roundCurrent++;
-    if (this.roundCurrent === 1) {
-      // on the first turn of the round, decide the length of the round.
-      this.roundLen = this.players.length;
-    }
-  }
-  endTurn() {
-    // check if round ended // TODO check if turn ended
-    const RoundLength = Math.min(this.players.length, this.roundLen);
-    if (this.roundCurrent >= RoundLength) {
-      this.round++;
-      this.roundCurrent = 0; // reset round index
-    }
-
-    io.to(this.name).emit("turn-ended");
-    let timer = 10;
-    const turnTimer = setInterval(() => {
-      io.to(this.name).emit("update-countdown", timer);
-      timer--;
-      if (timer === 0) {
-        io.to(this.name).emit("update-countdown", timer);
-        clearInterval(turnTimer);
-        this.changeTurns();
-      }
-    }, 1000);
-  }
-}
-
-class Message {
-  constructor(content, sender, didGuess) {
-    this.content = content;
-    this.sender = sender;
-    this.didGuess = didGuess;
-    this.type = "message";
-  }
-}
+import { io, app } from "./serverManager.js";
+import Room from "./classes/roomClass.js";
+import Message from "./classes/messageClass.js";
+let rooms = []; // room list
 
 //functions
 async function sendAvatars() {
@@ -251,16 +94,10 @@ function getWords(numberOfWords) {
   console.log(wordsChosen);
   return { status: "success", words: wordsChosen };
 }
-function cleanRoom(room) {
-  // cleans the room class before sending it to the client. removes timers to avoid circular references
-  const cleanRoom = { ...room };
-  delete cleanRoom.turnTimer;
-  return cleanRoom;
-}
-function changeTurns(room) {
-  const newOrder = [...room.players.slice(1), room.players[0]];
-  return newOrder;
-}
+// function changeTurns(room) {
+//   const newOrder = [...room.players.slice(1), room.players[0]];
+//   return newOrder;
+// }
 function getPlayer(id) {
   const room = findPlayerRoom(id);
   if (!room) return;
@@ -309,9 +146,9 @@ io.on("connection", (socket) => {
     const room = findAvailableRoom();
     room.addPlayer(player);
     socket.join(room.name);
-    socket.emit("joined-room", room);
+    socket.emit("joined-room", room.cleanRoom());
     console.log(`${player.name} has joined the room ${room.name}`);
-    io.to(room.name).emit("room-update", cleanRoom(room));
+    io.to(room.name).emit("room-update", room.cleanRoom());
     // send notification
     const notification = createNotification("Has Joined The Room", player.name);
     io.to(room.name).emit("get-message", notification);
@@ -320,7 +157,7 @@ io.on("connection", (socket) => {
   socket.on("get-room", () => {
     const room = findPlayerRoom(socket.id);
     if (room) {
-      socket.emit("room-update", cleanRoom(room));
+      socket.emit("room-update", room.cleanRoom());
     }
   });
 
@@ -332,7 +169,7 @@ io.on("connection", (socket) => {
     if (!player) return;
     removePlayerFromRoom(room.name, player.id);
     console.log(`${player.name} has left ${room.name}`);
-    io.to(room.name).emit("room-update", cleanRoom(room));
+    io.to(room.name).emit("room-update", room.cleanRoom());
     // send notification
     const notification = createNotification("Has Left The Room", player.name);
     io.to(room.name).emit("get-message", notification);
@@ -343,12 +180,11 @@ io.on("connection", (socket) => {
     const room = findPlayerRoom(socket.id);
     if (!room) return;
     room.wordChosen = word;
-    io.to(room.name).emit("room-update", cleanRoom(room));
+    io.to(room.name).emit("room-update", room.cleanRoom());
     room.startTurn();
   });
 
   socket.on("send-message", (message) => {
-    debugger;
     const room = findPlayerRoom(socket.id);
     if (!room) return;
     const player = getPlayer(socket.id);
@@ -370,10 +206,8 @@ io.on("connection", (socket) => {
         player.name
       );
       io.to(room.name).emit("get-message", notification);
-      io.to(room.name).emit("room-update", cleanRoom(room));
-
+      io.to(room.name).emit("room-update", room.cleanRoom());
       console.log("player updated");
-
       return;
     }
     // create message
@@ -398,5 +232,25 @@ io.on("connection", (socket) => {
     if (!room) return;
     const players = room.getAllPlayerScores();
     socket.emit("player-scores", players);
+  });
+
+  socket.on("update-canvas", (drawingData) => {
+    const room = findPlayerRoom(socket.id);
+    if (!room) return;
+    room.drawing = drawingData;
+    io.to(room.name).emit("update-drawing", drawingData);
+  });
+
+  socket.on("get-drawing", () => {
+    const room = findPlayerRoom(socket.id);
+    if (room) {
+      socket.emit("update-drawing", room.drawing);
+    }
+  });
+  socket.on("clear-canvas", () => {
+    const room = findPlayerRoom(socket.id);
+    if (room) {
+      io.to(room.name).emit("reset-canvas");
+    }
   });
 });
