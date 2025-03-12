@@ -5,10 +5,11 @@ export default class Room {
     // except the name all default values
     this.name = name;
     this.players = []; // lists the players in their order of play
-    this.guessers = []; // lists all players who guessed and how much points they got
+    this.guessers = []; // lists all players who guessed
     this.round = 1;
     this.rounds = 3;
-    this.turnTime = 900; // the time of each turn as a reference to the changing time
+    this.turnTime = 120; // the time of each turn as a reference to the changing time
+    this.countdown = 0; // the changing timer of each turn
     this.roundLen = undefined; // the amount of turns before round ends
     this.roundCurrent = 0; // current index of number of turns in round
     this.maxPlayers = 8;
@@ -28,81 +29,82 @@ export default class Room {
   }
   addPlayer(player) {
     this.players.push(player);
+    this.calculateRanking(); // update ranking after a player joins
   }
-  checkIfRemove() {
-    // check if room should be deleted
-    if (this.players.length === 0) return true;
-  }
-  resetGuessers() {
-    this.guessers = [];
-  }
+
   addGuesser(player) {
-    const scoreToGet =
-      this.guessers.length !== 0
-        ? this.guessers[this.guessers.length - 1].score -
-          100 / this.guessers.length
-        : 250; // if first one get 250 otherwise get using the formula
+    const score = Math.max(250 - this.guessers.length * 30, 50); // first one gets 250 others get using the formula
+
+    const timeBonus = Math.floor((this.turnTime - this.countdown) / 2); // the bonus for the time it took to guess
+    const scoreToGet = Math.max(score + timeBonus, 50); // extra points for time to guess
+    player.newScore = scoreToGet;
     player.score += scoreToGet;
-    this.players[0].score += 100; // give the drawer 100 points per each guesser
-    this.guessers = [...this.guessers, { id: player.id, score: scoreToGet }];
+
+    this.players[0].newScore += Math.max(100 + timeBonus, 50); // give the drawer points
+    this.players[0].score += Math.max(100 + timeBonus, 50);
+
+    this.guessers = [...this.guessers, player.id];
     // if all players guessed (excluding the drawer), end the turn
     const playersNoDrawer = this.players.slice(1);
     const isAllGuessers =
       this.guessers.length === playersNoDrawer.length &&
       playersNoDrawer.every((player) =>
-        this.guessers.some((guesser) => guesser.id === player.id)
+        this.guessers.some((id) => id === player.id)
       );
+    this.calculateRanking(); // updates the ranking of the players
     if (isAllGuessers) this.endTurn();
   }
+
   didPlayerGuess(id) {
-    return this.guessers.some((player) => player.id === id);
+    return this.guessers.some((player) => player === id);
   }
-  getAllGuessersId() {
-    const guessers = this.guessers.map((player) => player.id);
-    return guessers;
-  }
-  getAllPlayerScores() {
-    // returns a list of player objects with score earned and id
-    return this.players.map((player) => {
-      for (let i = 0; i < this.guessers.length; i++) {
-        if (this.guessers[i].id === player.id) {
-          player.newScore = this.guessers[i].score || 0;
-          return player;
-        } else if (i === 0) {
-          player.newScore = this.guessers.length * 100;
-          return player;
-        }
-      }
-      player.newScore = 0;
-      return player;
-    });
-  }
+
   startTimer() {
-    // starts the room timer.
-    let countdown = this.turnTime;
+    // starts the room timer
+    this.countdown = 0;
+    io.to(this.name).emit("update-timer", this.turnTime);
     this.turnTimer = setInterval(() => {
-      io.to(this.name).emit("update-timer", countdown);
-      countdown--;
-      if (countdown <= 0) {
-        io.to(this.name).emit("update-timer", countdown);
-        this.endTurn();
+      this.countdown++;
+      const timeLeft = this.turnTime - this.countdown;
+      io.to(this.name).emit("update-timer", timeLeft);
+
+      if (timeLeft === 0) {
         clearInterval(this.turnTimer);
+        this.endTurn();
       }
     }, 1000);
   }
+
   stopTimer() {
     //stops the timer
     clearInterval(this?.turnTimer);
   }
+
+  // functions to reset the room either for end turn or for session
+  resetGuessers() {
+    this.guessers = [];
+    if (this.players.length > 0) {
+      this.players?.forEach((player) => {
+        if (player?.newScore) player.newScore = 0;
+      }); // reset the new scores of the players
+    }
+  }
+
+  resetAllScores() {
+    if (this.players.length > 0) {
+      this.players.forEach((player) => (player.score = 0));
+    }
+  }
+
   changeTurns() {
-    this.stopTimer(); // might remove
     this.players = [...this.players.slice(1), this.players[0]];
     this.wordChosen = null;
-    this.resetGuessers();
     io.to(this.name).emit("room-update", this.cleanRoom());
     io.to(this.name).emit("change-turn");
   }
+
   startTurn() {
+    // start the turn timer and advence the currentRound length
     this.startTimer();
     this.roundCurrent++;
     if (this.roundCurrent === 1) {
@@ -110,28 +112,91 @@ export default class Room {
       this.roundLen = this.players.length;
     }
   }
+  resetRoom() {
+    // reset the values in the room for the next turn
+    this.drawing = [];
+    this.drawingHistory = [];
+    this.resetGuessers();
+    io.to(this.name).emit("reset-canvas");
+    this.wordChosen = null;
+  }
+
   endTurn() {
-    // check if round ended // TODO check if turn ended
+    this.stopTimer(); // stop the game timer
     const RoundLength = Math.min(this.players.length, this.roundLen);
+    io.to(this.name).emit("turn-ended"); // end session or end turn
+    this.guessers = []; // reset the guessers so they could chat with the other players
+    let timer = 10;
+    io.to(this.name).emit("update-countdown", timer);
+    // check if round ended
     if (this.roundCurrent >= RoundLength) {
       this.round++;
       this.roundCurrent = 0; // reset round index
     }
-    //drawing reset
-    this.drawing = [];
-    this.drawingHistory = [];
-    io.to(this.name).emit("reset-canvas");
-
-    io.to(this.name).emit("turn-ended");
-    let timer = 10;
     const turnTimer = setInterval(() => {
-      io.to(this.name).emit("update-countdown", timer);
       timer--;
+      io.to(this.name).emit("update-countdown", timer);
       if (timer === 0) {
-        io.to(this.name).emit("update-countdown", timer);
+        // handle timer
         clearInterval(turnTimer);
-        this.changeTurns();
+        //
+        this.resetRoom(); // reset room values
+        io.to(this.name).emit("continue-game"); // to leave the current endturn state
+        if (this.round > this.rounds) {
+          this.endSession();
+        } else {
+          this.changeTurns();
+        }
       }
     }, 1000);
+  }
+
+  calculateRanking() {
+    // get the rank of each player, same score = same rank
+    let playersByRank = [...this.players];
+    playersByRank.sort((a, b) => b.score - a.score);
+    let rank = 0;
+    let prevScore = undefined;
+    playersByRank.forEach((player, index) => {
+      if (player.score !== prevScore) {
+        rank++;
+      }
+      player.rank = rank;
+      prevScore = player.score;
+    });
+  }
+  resetToDefault() {
+    //after session reset propreties to default
+    this.players.forEach((player) => (player.score = 0));
+    this.round = 1;
+    this.calculateRanking();
+  }
+
+  endSession() {
+    io.to(this.name).emit("end-session");
+    this.players = this.sortPlayersByScore(); // sort players by score
+    let timer = 30;
+    io.to(this.name).emit("update-countdown", timer);
+    const turnTimer = setInterval(() => {
+      timer--;
+      io.to(this.name).emit("update-countdown", timer);
+      if (timer === 0) {
+        clearInterval(turnTimer);
+        this.resetToDefault();
+        io.to(this.name).emit("room-update", this.cleanRoom());
+        io.to(this.name).emit("continue-game"); // leave the current game state
+      }
+    }, 1000);
+  }
+
+  sortPlayersByScore() {
+    const players = [...this.players];
+    players.sort((a, b) => b.score - a.score);
+    return players;
+  }
+
+  checkIfRemove() {
+    // check if room should be deleted
+    if (this.players.length === 0) return true;
   }
 }

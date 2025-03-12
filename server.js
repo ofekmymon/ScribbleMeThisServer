@@ -4,7 +4,8 @@ import words from "./words.js";
 import { io, app } from "./serverManager.js";
 import Room from "./classes/roomClass.js";
 import Message from "./classes/messageClass.js";
-let rooms = []; // room list
+import { log } from "console";
+const rooms = []; // room list
 
 //functions
 async function sendAvatars() {
@@ -16,6 +17,7 @@ async function sendAvatars() {
   });
   return images;
 }
+
 async function sendHats() {
   const images = await fs.readdir("./images/Hats", (err, files) => {
     if (err) {
@@ -25,6 +27,7 @@ async function sendHats() {
   });
   return images;
 }
+
 function createRoom() {
   // create a room with a unique name and add the first player
   const roomName = crypto.randomBytes(30).toString("hex");
@@ -33,6 +36,7 @@ function createRoom() {
   console.log(`created room ${roomName}`);
   return room;
 }
+
 function findAvailableRoom() {
   if (rooms.length > 0) {
     rooms.sort((a, b) => a.players - b.players); // sort rooms by descending to fill the lower rooms
@@ -51,20 +55,69 @@ function findAvailableRoom() {
     return room;
   }
 }
+
+function generateRoomCode() {
+  // creates a random unique code for the room.
+  const existingCodes = new Set(rooms.map((room) => room.roomCode));
+  let roomCode;
+  do {
+    roomCode = crypto.randomBytes(4).toString("hex"); // create an 8 digit code
+  } while (existingCodes.has(roomCode));
+
+  return roomCode;
+}
+
 function findPlayerRoom(playerId) {
+  // find the room the player resides in.
   const room = rooms.find((roomItem) =>
     roomItem.players.some((p) => p.id === playerId)
   );
   return room;
 }
+
+function handleJoin(room, socket, player) {
+  // standared when a player joins a room
+  socket.emit("joined-room", room.cleanRoom());
+  room.addPlayer(player);
+  socket.join(room.name);
+  console.log(`${player.name} has joined the room ${room.name}`);
+  io.to(room.name).emit("room-update", room.cleanRoom());
+  // send notification
+  socket.on("player-joined", () => {
+    const notification = createNotification(
+      player.name,
+      " Has Joined The Room"
+    );
+    io.to(room.name).emit("get-message", notification);
+  });
+}
+
+function findRoomWithCode(code) {
+  const room = rooms.find((room) => room.roomCode === code);
+  console.log(rooms);
+
+  return room;
+}
+
+function updateRoomDetails(room, details) {
+  room.maxPlayers = details.maxPlayers;
+  room.rounds = details.maxRounds;
+  room.turnTime = details.turnTime;
+  room.wordsOptionNumber = details.wordOptions;
+}
+
 function removePlayerFromRoom(roomName, playerId) {
-  const room = rooms.find((r) => r.name === roomName);
+  // removes a player from the room and re-calculate the rankings if was last player room leaves the list
+  const room = findPlayerRoom(playerId);
   if (!room) return;
   room.players = room.players.filter((player) => player.id !== playerId);
-  if (room.players.length === 0) {
-    rooms = rooms.filter((r) => r.name !== roomName);
+  room.calculateRanking(); // update the ranking after a player leaves
+  const indexToRemove = rooms.indexOf(room);
+  if (room.players.length === 0 && indexToRemove !== -1) {
+    rooms.splice(indexToRemove, 1);
   }
 }
+
 function getWords(numberOfWords) {
   // gets words from the list
   // checks to see if data is valid and to avoid infinite loop
@@ -91,14 +144,11 @@ function getWords(numberOfWords) {
     }
     wordsChosen.push(words[rnd]);
   }
-  console.log(wordsChosen);
   return { status: "success", words: wordsChosen };
 }
-// function changeTurns(room) {
-//   const newOrder = [...room.players.slice(1), room.players[0]];
-//   return newOrder;
-// }
+
 function getPlayer(id) {
+  // gets player based on their socket id
   const room = findPlayerRoom(id);
   if (!room) return;
   const foundPlayer = room.players.find((player) => player.id === id);
@@ -106,7 +156,8 @@ function getPlayer(id) {
     return foundPlayer;
   }
 }
-function createNotification(message, sender) {
+
+function createNotification(sender, message) {
   // create a specific message that is used for notification
   const notification = new Message(message, sender, false);
   notification.type = "notification";
@@ -130,12 +181,6 @@ app.get("/api/get-hats", async (req, res) => {
   return res.status(500).json({ error: "Failed to send images" });
 });
 
-app.post("/api/get-words", (req, res) => {
-  // request to get the required number of words for the drawer to choose from.
-  const numberOfWords = req.body.numberOfWords;
-  return res.json(getWords(numberOfWords));
-});
-
 // socket connections
 io.on("connection", (socket) => {
   console.log(`${socket.id} has joined`);
@@ -144,21 +189,7 @@ io.on("connection", (socket) => {
     // player enters quickplay
     console.log(`Finding room for socket ${socket.id} name: ${player.name}...`);
     const room = findAvailableRoom();
-    room.addPlayer(player);
-    socket.join(room.name);
-    socket.emit("joined-room", room.cleanRoom());
-    console.log(`${player.name} has joined the room ${room.name}`);
-    io.to(room.name).emit("room-update", room.cleanRoom());
-    // send notification
-    const notification = createNotification("Has Joined The Room", player.name);
-    io.to(room.name).emit("get-message", notification);
-  });
-
-  socket.on("get-room", () => {
-    const room = findPlayerRoom(socket.id);
-    if (room) {
-      socket.emit("room-update", room.cleanRoom());
-    }
+    handleJoin(room, socket, player);
   });
 
   socket.on("disconnect", () => {
@@ -167,12 +198,114 @@ io.on("connection", (socket) => {
     if (!room) return;
     const player = room.players.find((p) => p.id === socket.id);
     if (!player) return;
+    if (player === room.players[0] || room.players.length <= 2) {
+      // if player is drawer or the last one left, end their turn.
+      room.endTurn();
+    }
     removePlayerFromRoom(room.name, player.id);
     console.log(`${player.name} has left ${room.name}`);
     io.to(room.name).emit("room-update", room.cleanRoom());
     // send notification
-    const notification = createNotification("Has Left The Room", player.name);
+    const notification = createNotification(player.name, " Has Left The Room");
     io.to(room.name).emit("get-message", notification);
+  });
+
+  socket.on("create-private", (player) => {
+    console.log("Creating New Private Room...");
+    const room = createRoom();
+    room.owner = player.id;
+    room.roomCode = generateRoomCode();
+    room.state = "private/settings"; // private but not defined yet
+    handleJoin(room, socket, player);
+    // send notification with the room code in it
+    socket.once("player-joined", () => {
+      const codeMsg = createNotification("The Room Code Is: ", room.roomCode);
+      socket.emit("get-message", codeMsg);
+    });
+  });
+
+  socket.on("request-to-join", (player, code) => {
+    console.log(code);
+
+    const room = findRoomWithCode(code);
+    if (!room) {
+      // if couldnt find room
+      socket.emit("throw-frontpage-error", "Invalid code");
+      return;
+    }
+    if (room.players.length >= room.maxPlayers) {
+      //if room full
+      socket.emit("throw-frontpage-error", "Room full");
+      return;
+    }
+    // join room
+    handleJoin(room, socket, player);
+  });
+
+  socket.on("update-private-room", (details) => {
+    const room = findPlayerRoom(socket.id);
+    if (!room) return;
+    updateRoomDetails(room, details);
+    io.to(room.name).emit("room-update", room.cleanRoom());
+  });
+
+  socket.on("initiate-private-room", () => {
+    const room = findPlayerRoom(socket.id);
+    if (!room) return;
+    room.state = "private";
+    io.to(room.name).emit("room-update", room.cleanRoom());
+  });
+
+  //get data
+  socket.on("get-room", () => {
+    const room = findPlayerRoom(socket.id);
+    if (room) {
+      socket.emit("room-update", room.cleanRoom());
+    }
+  });
+
+  socket.on("get-player-scores", () => {
+    const room = findPlayerRoom(socket.id);
+    if (!room) return;
+    socket.emit("player-scores", room.players);
+  });
+
+  socket.on("get-drawing", () => {
+    const room = findPlayerRoom(socket.id);
+    if (room) {
+      socket.emit("update-drawing", room.drawing);
+    }
+  });
+
+  socket.on("get-score-sorted-players", () => {
+    const room = findPlayerRoom(socket.id);
+    if (!room) return;
+    socket.emit("players-sorted-by-score", room.sortPlayersByScore());
+  });
+  // mutate data
+
+  socket.on("get-words", () => {
+    // starts the timer for the drawer to choose a word
+    const room = findPlayerRoom(socket.id);
+    if (!room) return;
+    const wordsRequest = getWords(room.wordsOptionNumber);
+    if (wordsRequest.status !== "success") return; // if failed to get words, return
+    const wordOptions = wordsRequest.words;
+    socket.emit("word-options", wordOptions);
+    let timer = 15;
+    socket.emit("update-countdown", timer);
+    room.countdown = setInterval(() => {
+      timer--;
+      socket.emit("update-countdown", timer);
+      if (timer === 0) {
+        clearInterval(room.countdown);
+        // if timer ends a random word will be chosen
+        const randomIndex = Math.floor(Math.random() * wordOptions.length);
+        room.wordChosen = wordOptions[randomIndex];
+        io.to(room.name).emit("room-update", room.cleanRoom());
+        room.startTurn();
+      }
+    }, 1000);
   });
 
   socket.on("word-chosen", (word) => {
@@ -180,6 +313,11 @@ io.on("connection", (socket) => {
     const room = findPlayerRoom(socket.id);
     if (!room) return;
     room.wordChosen = word;
+    // clears the timer
+    if (room.countdown) {
+      clearInterval(room.countdown); // Stop the countdown
+      room.countdown = null;
+    }
     io.to(room.name).emit("room-update", room.cleanRoom());
     room.startTurn();
   });
@@ -207,31 +345,21 @@ io.on("connection", (socket) => {
       );
       io.to(room.name).emit("get-message", notification);
       io.to(room.name).emit("room-update", room.cleanRoom());
-      console.log("player updated");
       return;
     }
     // create message
     const createMessage = new Message(message, player.name, guessed);
-
     if (isCorrectGuess && isDrawer) {
       // dont let the drawer message the word.
       return;
     }
-
+    // for players that guessed this round, only display their messages to eachother and the drawer
     if (guessed) {
-      // for players that guessed this round, only display their messages to eachother and the drawer
-      const guessersSockets = [...room.getAllGuessersId(), room.players[0].id];
+      const guessersSockets = [...room.guessers, room.players[0].id];
       io.sockets.to(guessersSockets).emit("get-message", createMessage);
       return;
     }
     io.to(room.name).emit("get-message", createMessage);
-  });
-
-  socket.on("get-player-scores", () => {
-    const room = findPlayerRoom(socket.id);
-    if (!room) return;
-    const players = room.getAllPlayerScores();
-    socket.emit("player-scores", players);
   });
 
   socket.on("update-canvas", (drawingData) => {
@@ -241,12 +369,6 @@ io.on("connection", (socket) => {
     io.to(room.name).emit("update-drawing", drawingData);
   });
 
-  socket.on("get-drawing", () => {
-    const room = findPlayerRoom(socket.id);
-    if (room) {
-      socket.emit("update-drawing", room.drawing);
-    }
-  });
   socket.on("clear-canvas", () => {
     const room = findPlayerRoom(socket.id);
     if (room) {
