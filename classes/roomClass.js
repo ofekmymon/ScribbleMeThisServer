@@ -25,6 +25,7 @@ export default class Room {
     const cleanRoom = { ...this };
     delete cleanRoom.turnTimer;
     delete cleanRoom.drawing;
+    delete cleanRoom.countdown;
     return cleanRoom;
   }
   addPlayer(player) {
