@@ -8,7 +8,7 @@ export default class Room {
     this.guessers = []; // lists all players who guessed
     this.round = 1;
     this.rounds = 3;
-    this.turnTime = 120; // the time of each turn as a reference to the changing time
+    this.turnTime = 10000; // the time of each turn as a reference to the changing time
     this.countdown = 0; // the changing timer of each turn
     this.roundLen = undefined; // the amount of turns before round ends
     this.roundCurrent = 0; // current index of number of turns in round
@@ -119,6 +119,10 @@ export default class Room {
     this.resetGuessers();
     io.to(this.name).emit("reset-canvas");
     this.wordChosen = null;
+    clearInterval(this?.turnTimer);
+    this.turnTimer = null;
+    clearInterval(this?.countdown);
+    this.countdown = null;
   }
 
   endTurn() {
@@ -133,13 +137,12 @@ export default class Room {
       this.round++;
       this.roundCurrent = 0; // reset round index
     }
-    const turnTimer = setInterval(() => {
+    this.turnTimer = setInterval(() => {
       timer--;
       io.to(this.name).emit("update-countdown", timer);
       if (timer === 0) {
         // handle timer
-        clearInterval(turnTimer);
-        //
+        clearInterval(this.turnTimer);
         this.resetRoom(); // reset room values
         io.to(this.name).emit("continue-game"); // to leave the current endturn state
         if (this.round > this.rounds) {
@@ -177,11 +180,11 @@ export default class Room {
     this.players = this.sortPlayersByScore(); // sort players by score
     let timer = 30;
     io.to(this.name).emit("update-countdown", timer);
-    const turnTimer = setInterval(() => {
+    this.turnTimer = setInterval(() => {
       timer--;
       io.to(this.name).emit("update-countdown", timer);
       if (timer === 0) {
-        clearInterval(turnTimer);
+        clearInterval(this.turnTimer);
         this.resetToDefault();
         io.to(this.name).emit("room-update", this.cleanRoom());
         io.to(this.name).emit("continue-game"); // leave the current game state

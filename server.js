@@ -4,7 +4,6 @@ import words from "./words.js";
 import { io, app } from "./serverManager.js";
 import Room from "./classes/roomClass.js";
 import Message from "./classes/messageClass.js";
-import { log } from "console";
 const rooms = []; // room list
 
 //functions
@@ -106,15 +105,26 @@ function updateRoomDetails(room, details) {
   room.wordsOptionNumber = details.wordOptions;
 }
 
-function removePlayerFromRoom(roomName, playerId) {
+function removePlayerFromRoom(playerId) {
   // removes a player from the room and re-calculate the rankings if was last player room leaves the list
   const room = findPlayerRoom(playerId);
   if (!room) return;
   room.players = room.players.filter((player) => player.id !== playerId);
   room.calculateRanking(); // update the ranking after a player leaves
-  const indexToRemove = rooms.indexOf(room);
-  if (room.players.length === 0 && indexToRemove !== -1) {
-    rooms.splice(indexToRemove, 1);
+
+  // Clear intervals and timeouts if the room is empty or 1 left
+  if (room.players.length <= 1) {
+    if (room.countdown) {
+      clearInterval(room.countdown);
+      room.countdown = null;
+    }
+    room.resetRoom();
+    if (room.players.length === 0) {
+      const indexToRemove = rooms.indexOf(room);
+      if (indexToRemove !== -1) {
+        rooms.splice(indexToRemove, 1);
+      }
+    }
   }
 }
 
@@ -165,6 +175,10 @@ function createNotification(sender, message) {
 }
 
 // http requests
+app.get("/", (req, res) => {
+  return res.json("HWello");
+});
+
 app.get("/api/get-avatars", async (req, res) => {
   const files = await sendAvatars();
   if (files && files.length > 0) {
@@ -202,12 +216,17 @@ io.on("connection", (socket) => {
       // if player is drawer or the last one left, end their turn.
       room.endTurn();
     }
-    removePlayerFromRoom(room.name, player.id);
     console.log(`${player.name} has left ${room.name}`);
-    io.to(room.name).emit("room-update", room.cleanRoom());
-    // send notification
-    const notification = createNotification(player.name, " Has Left The Room");
-    io.to(room.name).emit("get-message", notification);
+    removePlayerFromRoom(player.id);
+    if (room.players.length > 0) {
+      io.to(room.name).emit("room-update", room.cleanRoom());
+      // send notification
+      const notification = createNotification(
+        player.name,
+        " Has Left The Room"
+      );
+      io.to(room.name).emit("get-message", notification);
+    }
   });
 
   socket.on("create-private", (player) => {
