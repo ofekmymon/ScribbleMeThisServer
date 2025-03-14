@@ -6,7 +6,8 @@ import path from "path";
 export const app = express();
 
 const PORT = 4000;
-const ALLOWED_ORIGINS = ["http://192.168.1.162:3000", "http://localhost:3000"];
+// development const ALLOWED_ORIGINS = ["http://192.168.1.162:3000", "http://localhost:3000"];
+const ALLOWED_ORIGINS = ["https://scribble-me-this-client.vercel.app"]
 //serve images
 app.use("/images", express.static(path.join("./images")));
 
