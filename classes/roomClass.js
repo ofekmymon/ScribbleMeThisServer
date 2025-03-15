@@ -8,7 +8,7 @@ export default class Room {
     this.guessers = []; // lists all players who guessed
     this.round = 1;
     this.rounds = 3;
-    this.turnTime = 10000; // the time of each turn as a reference to the changing time
+    this.turnTime = 120; // the time of each turn as a reference to the changing time
     this.countdown = 0; // the changing timer of each turn
     this.roundLen = undefined; // the amount of turns before round ends
     this.roundCurrent = 0; // current index of number of turns in round
