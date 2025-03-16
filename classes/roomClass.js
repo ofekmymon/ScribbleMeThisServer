@@ -8,13 +8,15 @@ export default class Room {
     this.guessers = []; // lists all players who guessed
     this.round = 1;
     this.rounds = 3;
-    this.turnTime = 120; // the time of each turn as a reference to the changing time
+    this.turnTime = 20; // the time of each turn as a reference to the changing time
     this.countdown = 0; // the changing timer of each turn
     this.roundLen = undefined; // the amount of turns before round ends
     this.roundCurrent = 0; // current index of number of turns in round
     this.maxPlayers = 8;
     this.wordsOptionNumber = 3;
     this.wordChosen = null;
+    this.numberOfHints = 2;
+    this.hintsOpened = []; // a list of indexes of the hints that have opened
     this.state = "public";
     this.owner = null;
     this.roomCode = "";
@@ -26,6 +28,7 @@ export default class Room {
     delete cleanRoom.turnTimer;
     delete cleanRoom.drawing;
     delete cleanRoom.countdown;
+    delete cleanRoom.hintsOpened;
     return cleanRoom;
   }
   addPlayer(player) {
@@ -59,6 +62,34 @@ export default class Room {
   didPlayerGuess(id) {
     return this.guessers.some((player) => player === id);
   }
+  // TODOOOOOO
+  // WHEN RESETING THE ROOM RESET THE HINTS.
+  // RECIEVE HINTS IN FRONTEND
+
+  unlockHint() {
+    if (
+      this.countdown %
+        Math.floor(
+          this.turnTime /
+            (Math.min(this.numberOfHints, this.wordChosen.length - 1) + 1)
+        ) ==
+        0 &&
+      // dont reveal more hints than the length of the word chosen and dont reveal the last letter
+      this.hintsOpened.length <
+        Math.min(this.numberOfHints, this.wordChosen.length - 1)
+    ) {
+      let randomIndex;
+      do {
+        randomIndex = Math.floor(Math.random() * this.wordChosen.length);
+      } while (
+        this.hintsOpened.includes(randomIndex) ||
+        this.wordChosen.charAt(randomIndex) === " "
+      );
+      this.hintsOpened.push(randomIndex);
+      io.to(this.name).emit("get-hint", this.hintsOpened);
+    }
+    return;
+  }
 
   startTimer() {
     // starts the room timer
@@ -66,9 +97,10 @@ export default class Room {
     io.to(this.name).emit("update-timer", this.turnTime);
     this.turnTimer = setInterval(() => {
       this.countdown++;
+      // conditions to unlock a hint
+      this.unlockHint();
       const timeLeft = this.turnTime - this.countdown;
       io.to(this.name).emit("update-timer", timeLeft);
-
       if (timeLeft === 0) {
         clearInterval(this.turnTimer);
         this.endTurn();
@@ -79,6 +111,8 @@ export default class Room {
   stopTimer() {
     //stops the timer
     clearInterval(this?.turnTimer);
+    // sends the frontend a queue to stop playing clock audio
+    io.to(this.name).emit("stop-timer");
   }
 
   // functions to reset the room either for end turn or for session
@@ -118,6 +152,7 @@ export default class Room {
     this.drawing = [];
     this.drawingHistory = [];
     this.resetGuessers();
+    this.hintsOpened = [];
     io.to(this.name).emit("reset-canvas");
     this.wordChosen = null;
     clearInterval(this?.turnTimer);

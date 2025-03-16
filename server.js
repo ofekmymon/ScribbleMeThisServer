@@ -103,6 +103,7 @@ function updateRoomDetails(room, details) {
   room.rounds = details.maxRounds;
   room.turnTime = details.turnTime;
   room.wordsOptionNumber = details.wordOptions;
+  room.numberOfHints = details.hintsNumber;
 }
 
 function removePlayerFromRoom(playerId) {
@@ -359,8 +360,8 @@ io.on("connection", (socket) => {
       // if guessed the word
       room.addGuesser(player);
       const notification = createNotification(
-        "Has Guessed The Word",
-        player.name
+        player.name,
+        "Has Guessed The Word"
       );
       io.to(room.name).emit("get-message", notification);
       io.to(room.name).emit("room-update", room.cleanRoom());
